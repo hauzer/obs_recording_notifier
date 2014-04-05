@@ -1,0 +1,5 @@
+include_directories("${OBS_ROOT}/OBSApi")
+add_library(recording_notifier SHARED recording_notifier.cpp)
+add_dependencies(recording_notifier OBSApi)
+set_target_properties(recording_notifier PROPERTIES PREFIX "")
+target_link_libraries(recording_notifier Winmm)
