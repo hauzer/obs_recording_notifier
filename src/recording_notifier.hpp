@@ -1,4 +1,4 @@
-﻿// A simple OBS (Open Broadcasting Software) plugin that plays sounds upon starting and stopping of a recording.
+﻿// An OBS (Open Broadcasting Software) plugin that let's you know when you start or stop recording.
 // Copyright (C) 2014  Никола "hauzer" Вукосављевић
 
 // This program is free software: you can redistribute it and/or modify

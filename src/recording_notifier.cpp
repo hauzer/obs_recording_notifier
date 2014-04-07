@@ -1,4 +1,4 @@
-﻿// A simple OBS (Open Broadcasting Software) plugin that plays sounds upon starting and stopping of a recording.
+﻿// An OBS (Open Broadcasting Software) plugin that let's you know when you start or stop recording.
 // Copyright (C) 2014  Никола "hauzer" Вукосављевић
 
 // This program is free software: you can redistribute it and/or modify
@@ -14,10 +14,14 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+#include <sstream>
+
 #include <OBSApi.h>
-#include <Mmsystem.h>
+#include <sapi.h>
 
 #include "recording_notifier.hpp"
+
+ISpVoice* voice;
 
 void ConfigPlugin(HWND)
 {
@@ -25,31 +29,54 @@ void ConfigPlugin(HWND)
 
 bool LoadPlugin()
 {
+    if(FAILED(CoInitialize(NULL)))
+        return false;
+
+    HRESULT hr = CoCreateInstance(CLSID_SpVoice, NULL, CLSCTX_ALL, IID_ISpVoice, (void**)&voice);
+    if(FAILED(hr))
+        return false;
+    
     return true;
 }
 
 void UnloadPlugin()
 {
+    voice->Release();
+    voice = NULL;
+    CoUninitialize();
 }
 
 CTSTR GetPluginName()
 {
-    return TEXT("Recording notifier");
+    return TEXT("Recording Notifier");
 }
 
 CTSTR GetPluginDescription()
 {
-    return TEXT("Recording notifier");
+    return TEXT("Let's you know when you start or stop recording.");
 }
 
 void OnStartStream()
 {
-    PlaySound("SystemQuestion", NULL, SND_ALIAS);
+    if(!OBSGetRecording()) return;
+
+    std::wostringstream ss;
+    ss << OBSGetSceneName() << L" is now recording.";
+    voice->Speak(ss.str().c_str(), SPF_ASYNC | SPF_IS_NOT_XML, NULL);
+    
+    auto desktop_audio = OBSGetDesktopAudioSource();
+    desktop_audio->StopCapture();
+    voice->WaitUntilDone(INFINITE);
+    desktop_audio->StartCapture();
 }
 
 void OnStopStream()
 {
-    PlaySound("SystemHand", NULL, SND_ALIAS);
+    if(!OBSGetRecording()) return;
+    
+    std::wostringstream ss;
+    ss << OBSGetSceneName() << L" has stopped recording.";
+    voice->Speak(ss.str().c_str(), SPF_ASYNC | SPF_IS_NOT_XML, NULL);
 }
 
 BOOL CALLBACK DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved)
