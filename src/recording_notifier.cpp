@@ -14,8 +14,9 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-#include <sstream>
 #include <memory>
+#include <boost/algorithm/string.hpp>
+#include <boost/format.hpp>
 
 #include <OBSApi.h>
 #include <Mmdeviceapi.h>
@@ -26,58 +27,93 @@
 #include "recording_notifier.hpp"
 
 
-#define CHECK_HR(expr) \
-    hr = expr;  \
-    if(FAILED(hr)) { \
-        goto hr_failure;   \
+#define _CHECK_HR(hr)   \
+    if(FAILED(hr)) {    \
+        goto check_failure;   \
     }
+
+#define CHECK_HR(expr)  \
+    _CHECK_HR(expr);
+
+#define CHECK_ERROR(expr) \
+    SetLastError(ERROR_SUCCESS);    \
+    expr;   \
+    _CHECK_HR(HRESULT_FROM_WIN32(GetLastError()));
+
+#define SAFE_RELEASE(obj)   \
+    if(obj != NULL) {   \
+        obj->Release(); \
+        obj = NULL; \
+    }
+
+
+class Voice
+{
+private:
+    ISpVoice* voice;
+
+public:
+    Voice()
+    {
+        CHECK_HR(CoCreateInstance(CLSID_SpVoice, NULL, CLSCTX_ALL, IID_ISpVoice, (LPVOID*)&voice));
+        this->voice = voice;
+
+    check_failure:
+        return;
+    }
+
+    ~Voice()
+    {
+        voice->Release();
+    }
+
+    void speak(const std::wstring& message)
+    {
+        CHECK_HR(voice->SetVolume(100));
+        CHECK_HR(voice->SetRate(-2));
+        CHECK_HR(voice->Speak(message.data(), SPF_IS_XML, NULL));
+
+    check_failure:
+        return;
+    }
+};
 
 
 class Volume
 {
 private:
-    ISimpleAudioVolume* volume;
+    ISimpleAudioVolume& volume;
 
 public:
     Volume(ISimpleAudioVolume* volume) :
-        volume(volume)
+        volume(*volume)
     {
     }
 
     ~Volume()
     {
-        if(volume == nullptr) return;
-
-        volume->Release();
+        volume.Release();
     }
 
     bool is_muted()
     {
-        if(volume == nullptr) false;
-
         BOOL _is_muted;
-        volume->GetMute(&_is_muted);
+        volume.GetMute(&_is_muted);
         return _is_muted;
     }
 
     void mute()
     {
-        if(volume == nullptr) return;
-
-        volume->SetMute(TRUE, NULL);
+        volume.SetMute(TRUE, NULL);
     }
 
     void unmute()
     {
-        if(volume == nullptr) return;
-
-        volume->SetMute(FALSE, NULL);
+        volume.SetMute(FALSE, NULL);
     }
 
     void toggle_muted()
     {
-        if(volume == nullptr) return;
-
         if(is_muted())
             unmute();
         else
@@ -87,11 +123,9 @@ public:
 
 
 void speak(const std::wstring&);
-std::unique_ptr<Volume> get_scene_volume();
-BOOL CALLBACK get_scene_audio_volume_EnumWindows_callback(HWND, LPARAM);
-
-
-ISpVoice* voice;
+void speak(const boost::wformat&);
+std::unique_ptr<Volume> get_obs_scene_volume();
+HRESULT get_default_audio_device(IMMDevice*&);
 
 
 /*void ConfigPlugin(HWND)
@@ -100,47 +134,41 @@ ISpVoice* voice;
 
 bool LoadPlugin()
 {
-    HRESULT hr;
-
     CHECK_HR(CoInitialize(NULL));
-    CHECK_HR(CoCreateInstance(CLSID_SpVoice, NULL, CLSCTX_ALL, IID_ISpVoice, (LPVOID*)&voice));
     
     return true;
 
-hr_failure:
+check_failure:
     return false;
 }
 
 void UnloadPlugin()
 {
-    SafeRelease(voice);
     CoUninitialize();
 }
 
 CTSTR GetPluginName()
 {
-    return TEXT("Recording Notifier");
+    return L"Recording Notifier";
 }
 
 CTSTR GetPluginDescription()
 {
-    return TEXT("Let's you know when you start or stop recording.");
+    return L"Let's you know when you start or stop recording.";
 }
 
 void OnStartStream()
 {
     if(!OBSGetRecording()) return;
 
-    auto message = OBSGetSceneName() + std::wstring(L" <rate speed=\"-5\"><emph>is now</emph></rate> recording.");
-    speak(message);
+    speak((boost::wformat(L"%1% is now recording.") % OBSGetSceneName()));
 }
 
 void OnStopStream()
 {
     if(!OBSGetRecording()) return;
 
-    auto message = OBSGetSceneName() + std::wstring(L" <rate speed=\"-5\"><emph>has stopped</emph></rate> recording.");
-    speak(message);
+    speak((boost::wformat(L"%1% has stopped recording.") % OBSGetSceneName()));
 }
 
 BOOL CALLBACK DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved)
@@ -151,28 +179,86 @@ BOOL CALLBACK DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved)
 
 void speak(const std::wstring& message)
 {
-    auto scene_volume = get_scene_volume();
-    auto desktop_audio = OBSGetDesktopAudioSource();
+    /*
+    IMMDevice* audio_device = NULL;
+    IAudioClient* audio_session = NULL;
+    WAVEFORMATEX format;
+    */
+    Voice voice;
+    std::unique_ptr<Volume> scene_volume;
+    AudioSource* desktop_audio;
+    
+    /*
+    CHECK_HR(get_default_audio_device(audio_device));
+    CHECK_HR(audio_device->Activate(__uuidof(IAudioClient), CLSCTX_ALL, NULL, reinterpret_cast<void**>(&audio_session)));
 
-    scene_volume->mute();
+    format.wFormatTag = WAVE_FORMAT_PCM;
+    format.nChannels = 2;
+    format.nSamplesPerSec = 44.1;
+    format.wBitsPerSample = 16;
+    format.nBlockAlign = format.nChannels * format.wBitsPerSample;
+    format.nAvgBytesPerSec = format.nSamplesPerSec * format.nBlockAlign;
+    format.cbSize = sizeof(format);
+    CHECK_HR(audio_session->Initialize(AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_NOPERSIST | AUDCLNT_SESSIONFLAGS_DISPLAY_HIDE, 0, 0, &format, NULL));
+    CHECK_HR(audio_session->Start());
+    */
+
+    scene_volume = get_obs_scene_volume();
+    desktop_audio = OBSGetDesktopAudioSource();
+
+    if(scene_volume != nullptr) scene_volume->mute();
     desktop_audio->StopCapture();
 
-    voice->Speak(message.data(), SPF_ASYNC | SPF_IS_XML, NULL);
-    voice->WaitUntilDone(INFINITE);
+    /* CHECK_HR(voice->SetOutput(NULL, TRUE)) */
+    voice.speak(message);
 
     desktop_audio->StartCapture();
-    scene_volume->unmute();
+    if(scene_volume != nullptr) scene_volume->unmute();
+
+check_failure: ;
+    /*
+    SAFE_RELEASE(audio_device);
+    SAFE_RELEASE(audio_session)
+    */
 }
 
-std::unique_ptr<Volume> get_scene_volume()
+void speak(const boost::wformat& message)
 {
-    HWND hwnd = NULL;
-    DWORD procid;
-    EnumWindows(get_scene_audio_volume_EnumWindows_callback, reinterpret_cast<LPARAM>(&hwnd));
-    GetWindowThreadProcessId(hwnd, &procid);
+    speak(message.str());
+}
 
-    HRESULT hr;
-    IMMDeviceEnumerator *device_enumerator = NULL;
+std::unique_ptr<Volume> get_obs_scene_volume()
+{
+    struct EnumWindows_callback {
+        static BOOL CALLBACK f(HWND hwnd, LPARAM param)
+        {
+            int title_length;
+            wchar_t* title_raw = nullptr;
+            std::wstring title;
+            std::wstring scene_name;
+
+            CHECK_ERROR(title_length = GetWindowTextLength(hwnd) + 1);
+
+            title_raw = new wchar_t[title_length];
+            CHECK_ERROR(GetWindowText(hwnd, title_raw, title_length));
+
+            title = title_raw; delete title_raw; title_raw = nullptr;
+            scene_name = OBSGetSceneName();
+
+            boost::algorithm::to_lower(title);
+            boost::algorithm::to_lower(scene_name);
+            if(title.find(scene_name) != std::string::npos) {
+                HWND* out_hwnd = reinterpret_cast<HWND*>(param);
+                *out_hwnd = hwnd;
+                return FALSE;
+            }
+
+        check_failure:
+            delete title_raw;
+            return TRUE;
+        }
+    };
+
     IMMDevice *audio_device = NULL;
     IAudioSessionManager* audio_sessions_manager = NULL;
     IAudioSessionManager2* audio_sessions_manager2 = NULL;
@@ -181,9 +267,13 @@ std::unique_ptr<Volume> get_scene_volume()
     IAudioSessionControl2* audio_session_control2 = NULL;
     ISimpleAudioVolume* audio_volume = NULL;
 
-    CHECK_HR(CoCreateInstance(__uuidof(MMDeviceEnumerator), NULL, CLSCTX_ALL, __uuidof(IMMDeviceEnumerator), reinterpret_cast<void**>(&device_enumerator)));
-    CHECK_HR(device_enumerator->GetDefaultAudioEndpoint(eRender, eMultimedia, &audio_device));
+    HWND hwnd = NULL;
+    CHECK_ERROR(EnumWindows(EnumWindows_callback::f, reinterpret_cast<LPARAM>(&hwnd)));
 
+    DWORD procid;
+    CHECK_ERROR(GetWindowThreadProcessId(hwnd, &procid));
+
+    CHECK_HR(get_default_audio_device(audio_device));
     CHECK_HR(audio_device->Activate(__uuidof(IAudioSessionManager), CLSCTX_ALL, NULL, reinterpret_cast<void**>(&audio_sessions_manager)));
     CHECK_HR(audio_device->Activate(__uuidof(IAudioSessionManager2), CLSCTX_ALL, NULL, reinterpret_cast<void**>(&audio_sessions_manager2)));
 
@@ -203,31 +293,30 @@ std::unique_ptr<Volume> get_scene_volume()
         }
     }
 
-hr_failure:
-    SafeRelease(device_enumerator);
-    SafeRelease(audio_device);
-    SafeRelease(audio_sessions_manager);
-    SafeRelease(audio_sessions_manager2);
-    SafeRelease(audio_sessions);
-    SafeRelease(audio_session_control);
-    SafeRelease(audio_session_control2);
+check_failure:
+    SAFE_RELEASE(audio_device);
+    SAFE_RELEASE(audio_sessions_manager);
+    SAFE_RELEASE(audio_sessions_manager2);
+    SAFE_RELEASE(audio_sessions);
+    SAFE_RELEASE(audio_session_control);
+    SAFE_RELEASE(audio_session_control2);
 
-    return std::unique_ptr<Volume>(new Volume(audio_volume));
+    if(audio_volume == NULL)
+        return nullptr;
+    else
+        return std::unique_ptr<Volume>(new Volume(audio_volume));
 }
 
-BOOL CALLBACK get_scene_audio_volume_EnumWindows_callback(HWND hwnd, LPARAM param)
+HRESULT get_default_audio_device(IMMDevice*& audio_device)
 {
-    auto title_length = GetWindowTextLength(hwnd) + 1;
-    wchar_t* title_raw = new wchar_t[title_length];
-    GetWindowText(hwnd, title_raw, title_length);
-    std::wstring title(title_raw);
-    delete title_raw;
+    HRESULT hr;
+    IMMDeviceEnumerator *device_enumerator = NULL;
 
-    if(title.find(OBSGetSceneName()) != std::string::npos) {
-        HWND* out_hwnd = reinterpret_cast<HWND*>(param);
-        *out_hwnd = hwnd;
-        return FALSE;
-    }
+    CHECK_HR(hr = CoCreateInstance(__uuidof(MMDeviceEnumerator), NULL, CLSCTX_ALL, __uuidof(IMMDeviceEnumerator), reinterpret_cast<void**>(&device_enumerator)));
+    CHECK_HR(hr = device_enumerator->GetDefaultAudioEndpoint(eRender, eMultimedia, &audio_device));
 
-    return TRUE;
+check_failure:
+    SAFE_RELEASE(device_enumerator);
+
+    return hr;
 }
