@@ -136,7 +136,7 @@ public:
 
 
 void speak(const std::wstring&);
-std::unique_ptr<Audio> get_obs_scene_volume();
+std::unique_ptr<Audio> get_obs_scene_audio();
 
 
 /*void ConfigPlugin(HWND)
@@ -190,23 +190,20 @@ BOOL CALLBACK DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved)
 
 void speak(const std::wstring& message)
 {
-    Voice voice;
-    std::unique_ptr<Audio> scene_audio;
-    AudioSource* desktop_audio;
-
-    scene_audio = get_obs_scene_volume();
-    desktop_audio = OBSGetDesktopAudioSource();
+    auto scene_audio = get_obs_scene_audio();
+    auto desktop_audio = OBSGetDesktopAudioSource();
 
     if(scene_audio != nullptr) scene_audio->mute();
     desktop_audio->StopCapture();
 
+    Voice voice;
     voice.speak(message);
 
     desktop_audio->StartCapture();
     if(scene_audio != nullptr) scene_audio->unmute();
 }
 
-std::unique_ptr<Audio> get_obs_scene_volume()
+std::unique_ptr<Audio> get_obs_scene_audio()
 {
     struct EnumWindows_callback {
         static BOOL CALLBACK f(HWND hwnd, LPARAM param)
