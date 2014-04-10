@@ -14,21 +14,27 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
+#include <exception>
 #include <memory>
 #include <boost/algorithm/string.hpp>
+#include <boost/exception/all.hpp>
 #include <boost/format.hpp>
 
-#include <OBSApi.h>
-#include <Mmdeviceapi.h>
+#include <OBSApi.h> // The position of this header matters, see https://obsproject.com/forum/threads/obsapi-and-windows-headers.13327/
 #include <Audioclient.h>
 #include <audiopolicy.h>
+#include <Mmdeviceapi.h>
 #include <sapi.h>
 
 #include "recording_notifier.hpp"
 
 
+#define INIT_CHECKS()   \
+    bool _check_failed = false;
+
 #define _CHECK_HR(hr)   \
     if(FAILED(hr)) {    \
+        _check_failed = true;   \
         goto check_failure;   \
     }
 
@@ -40,11 +46,22 @@
     expr;   \
     _CHECK_HR(HRESULT_FROM_WIN32(GetLastError()));
 
+#define CHECK_FAILURE(exprs)    \
+check_failure:  \
+    exprs   \
+    if(_check_failed)   \
+        BOOST_THROW_EXCEPTION(check_error());
+    
 #define SAFE_RELEASE(obj)   \
     if(obj != NULL) {   \
         obj->Release(); \
         obj = NULL; \
     }
+
+
+struct base_error : virtual std::exception, virtual boost::exception { };
+struct nullptr_error : virtual base_error { };
+struct check_error : virtual base_error { };
 
 
 class Voice
@@ -55,13 +72,14 @@ private:
 public:
     Voice()
     {
+        INIT_CHECKS();
+
         CHECK_HR(CoCreateInstance(CLSID_SpVoice, NULL, CLSCTX_ALL, IID_ISpVoice, (LPVOID*)&voice));
         CHECK_HR(voice->SetVolume(100));
         CHECK_HR(voice->SetRate(-2));
-
-    check_failure:
         return;
-        // throw exception?
+
+    CHECK_FAILURE();
     }
 
     ~Voice()
@@ -71,11 +89,12 @@ public:
 
     void speak(const std::wstring& message)
     {
-        CHECK_HR(voice->Speak(message.data(), SPF_IS_XML, NULL));
+        INIT_CHECKS();
 
-    check_failure:
+        CHECK_HR(voice->Speak(message.data(), SPF_IS_XML, NULL));
         return;
-        // throw exception?
+
+    CHECK_FAILURE();
     }
 };
 
@@ -83,46 +102,51 @@ public:
 class Audio
 {
 private:
-    ISimpleAudioVolume& audio;
+    ISimpleAudioVolume* audio;
 
 public:
-    Audio(ISimpleAudioVolume* audio) :
-        audio(*audio)
+    Audio(ISimpleAudioVolume* audio)
     {
+        if(audio != nullptr)
+            this->audio = audio;
+        else
+            BOOST_THROW_EXCEPTION(nullptr_error());
     }
 
     ~Audio()
     {
-        audio.Release();
+        audio->Release();
     }
 
     bool is_muted()
     {
+        INIT_CHECKS();
+
         BOOL _is_muted;
-        CHECK_HR(audio.GetMute(&_is_muted));
+        CHECK_HR(audio->GetMute(&_is_muted));
         return _is_muted;
 
-    check_failure:
-        return true;
-        // throw exception?
+    CHECK_FAILURE();
     }
 
     void mute()
     {
-        CHECK_HR(audio.SetMute(TRUE, NULL));
+        INIT_CHECKS();
 
-    check_failure:
+        CHECK_HR(audio->SetMute(TRUE, NULL));
         return;
-        // throw exception?
+
+    CHECK_FAILURE();
     }
 
     void unmute()
     {
-        CHECK_HR(audio.SetMute(FALSE, NULL));
+        INIT_CHECKS();
 
-    check_failure:
+        CHECK_HR(audio->SetMute(FALSE, NULL));
         return;
-        // throw exception?
+
+    CHECK_FAILURE();
     }
 
     void toggle_muted()
@@ -145,12 +169,14 @@ std::unique_ptr<Audio> get_obs_scene_audio();
 
 bool LoadPlugin()
 {
+    INIT_CHECKS();
+
     CHECK_HR(CoInitialize(NULL));
-    
     return true;
 
-check_failure:
+CHECK_FAILURE(
     return false;
+    );
 }
 
 void UnloadPlugin()
@@ -190,7 +216,13 @@ BOOL CALLBACK DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved)
 
 void speak(const std::wstring& message)
 {
-    auto scene_audio = get_obs_scene_audio();
+    std::unique_ptr<Audio> scene_audio;
+    try {
+        scene_audio = get_obs_scene_audio();
+    } catch(base_error) {
+        scene_audio = nullptr;
+    }
+
     auto desktop_audio = OBSGetDesktopAudioSource();
 
     if(scene_audio != nullptr) scene_audio->mute();
@@ -208,17 +240,19 @@ std::unique_ptr<Audio> get_obs_scene_audio()
     struct EnumWindows_callback {
         static BOOL CALLBACK f(HWND hwnd, LPARAM param)
         {
+            INIT_CHECKS();
+
             int title_length;
-            wchar_t* title_raw = nullptr;
+            std::unique_ptr<wchar_t> title_raw;
             std::wstring title;
             std::wstring scene_name;
 
             CHECK_ERROR(title_length = GetWindowTextLength(hwnd) + 1);
 
-            title_raw = new wchar_t[title_length];
-            CHECK_ERROR(GetWindowText(hwnd, title_raw, title_length));
+            title_raw = std::unique_ptr<wchar_t>(new wchar_t[title_length]);
+            CHECK_ERROR(GetWindowText(hwnd, title_raw.get(), title_length));
 
-            title = title_raw; delete title_raw; title_raw = nullptr;
+            title = title_raw.get();
             scene_name = OBSGetSceneName();
 
             boost::algorithm::to_lower(title);
@@ -229,11 +263,13 @@ std::unique_ptr<Audio> get_obs_scene_audio()
                 return FALSE;
             }
 
-        check_failure:
-            delete title_raw;
+        CHECK_FAILURE(
             return TRUE;
+            );
         }
     };
+
+    INIT_CHECKS();
 
     IMMDeviceEnumerator *device_enumerator = NULL;
     IMMDevice *audio_device = NULL;
@@ -272,7 +308,7 @@ std::unique_ptr<Audio> get_obs_scene_audio()
         }
     }
 
-check_failure:
+CHECK_FAILURE(
     SAFE_RELEASE(device_enumerator);
     SAFE_RELEASE(audio_device);
     SAFE_RELEASE(audio_sessions_manager);
@@ -280,10 +316,7 @@ check_failure:
     SAFE_RELEASE(audio_sessions);
     SAFE_RELEASE(audio_session_control);
     SAFE_RELEASE(audio_session_control2);
+    );
 
-    if(audio_volume == NULL)
-        return nullptr;
-        // throw exception?
-    else
-        return std::unique_ptr<Audio>(new Audio(audio_volume));
+    return std::unique_ptr<Audio>(new Audio(audio_volume));
 }
