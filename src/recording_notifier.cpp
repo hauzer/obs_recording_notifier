@@ -114,22 +114,22 @@ public:
     {
         INIT_CHECKS();
 
-		CSpStreamFormat format;
-		format.AssignFormat(SPSF_48kHz16BitStereo);
+        CSpStreamFormat format;
+        format.AssignFormat(SPSF_48kHz16BitStereo);
 
-		ISpAudio* audio;
-		CHECK_HR(SpCreateDefaultObjectFromCategoryId(SPCAT_AUDIOOUT, &audio));
-		audio->SetFormat(format.FormatId(), format.WaveFormatExPtr());
+        ISpAudio* audio;
+        CHECK_HR(SpCreateDefaultObjectFromCategoryId(SPCAT_AUDIOOUT, &audio));
+        audio->SetFormat(format.FormatId(), format.WaveFormatExPtr());
 
         CHECK_HR(CoCreateInstance(CLSID_SpVoice, NULL, CLSCTX_ALL, IID_ISpVoice, (LPVOID*)&voice));
         CHECK_HR(voice->SetVolume(100));
         CHECK_HR(voice->SetRate(-2));
-		CHECK_HR(voice->SetOutput(audio, FALSE));
+        CHECK_HR(voice->SetOutput(audio, FALSE));
         return;
 
-	CHECK_FAILURE(
-			SAFE_RELEASE(audio);
-		);
+    CHECK_FAILURE(
+            SAFE_RELEASE(audio);
+        );
     }
 
     ~Voice()
