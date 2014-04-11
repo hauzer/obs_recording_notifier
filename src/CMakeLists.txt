@@ -1,5 +1,5 @@
 include_directories(${Boost_INCLUDE_DIRS} "${OBS}/OBSApi")
-add_library(recording_notifier SHARED recording_notifier.cpp)
+add_library(recording_notifier SHARED recording_notifier.cpp recording_notifier.hpp)
 add_dependencies(recording_notifier OBSApi)
 set_target_properties(recording_notifier PROPERTIES PREFIX "")
 target_link_libraries(recording_notifier "sapi")
