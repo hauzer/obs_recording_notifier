@@ -20,11 +20,51 @@
 #include <boost/exception/all.hpp>
 #include <boost/format.hpp>
 
-#include <OBSApi.h> // The position of this header matters, see https://obsproject.com/forum/threads/obsapi-and-windows-headers.13327/
 #include <Audioclient.h>
 #include <audiopolicy.h>
 #include <Mmdeviceapi.h>
 #include <sapi.h>
+// See http://stackoverflow.com/q/20031597/2006222
+#pragma warning(disable: 4996)
+#include <sphelper.h>
+
+// See https://obsproject.com/forum/threads/obsapi-and-windows-headers.13327/
+#ifdef WINVER
+#define WINVER_REAL WINVER
+#undef WINVER
+#endif
+#ifdef _WIN32_WINNT
+#define WIN32_WINNT_REAL _WIN32_WINNT
+#undef _WIN32_WINNT
+#endif
+#ifdef NTDDI_VERSION
+#define NTDDI_VERSION_REAL NTDDI_VERSION
+#undef NTDDI_VERSION
+#endif
+#ifndef _INC_COMMCTRL
+#define _INC_COMMCTRL
+#define INC_COMMCTRL_DO_UNDEF
+#endif
+#include <OBSApi.h>
+#ifdef INC_COMMCTRL_DO_UNDEF
+#undef _INC_COMMCTRL
+#undef INC_COMMCTRL_DO_UNDEF
+#endif
+#ifdef NTDDI_VERSION_REAL
+#undef NTDDI_VERSION
+#define NTDDI_VERSION NTDDI_VERSION_REAL
+#undef NTDDI_VERSION_REAL
+#endif
+#ifdef WIN32_WINNT_REAL
+#undef _WIN32_WINNT
+#define _WIN32_WINNT WIN32_WINNT_REAL
+#undef WIN32_WINNT_REAL
+#endif
+#ifdef WINVER_REAL
+#undef WINVER
+#define WINVER WINVER_REAL
+#undef WINVER_REAL
+#endif
 
 #include "recording_notifier.hpp"
 
@@ -74,12 +114,22 @@ public:
     {
         INIT_CHECKS();
 
+		CSpStreamFormat format;
+		format.AssignFormat(SPSF_48kHz16BitStereo);
+
+		ISpAudio* audio;
+		CHECK_HR(SpCreateDefaultObjectFromCategoryId(SPCAT_AUDIOOUT, &audio));
+		audio->SetFormat(format.FormatId(), format.WaveFormatExPtr());
+
         CHECK_HR(CoCreateInstance(CLSID_SpVoice, NULL, CLSCTX_ALL, IID_ISpVoice, (LPVOID*)&voice));
         CHECK_HR(voice->SetVolume(100));
         CHECK_HR(voice->SetRate(-2));
+		CHECK_HR(voice->SetOutput(audio, FALSE));
         return;
 
-    CHECK_FAILURE();
+	CHECK_FAILURE(
+			SAFE_RELEASE(audio);
+		);
     }
 
     ~Voice()
