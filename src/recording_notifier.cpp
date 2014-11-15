@@ -307,7 +307,8 @@ std::unique_ptr<Audio> get_obs_scene_audio()
 
             boost::algorithm::to_lower(title);
             boost::algorithm::to_lower(scene_name);
-            if(title.find(scene_name) != std::string::npos) {
+            if((title.find(L"open broadcaster software") == std::string::npos) &&
+                (title.find(scene_name) != std::string::npos)) {
                 HWND* out_hwnd = reinterpret_cast<HWND*>(param);
                 *out_hwnd = hwnd;
                 return FALSE;
